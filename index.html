@@ -77,6 +77,14 @@
   .stamp.todo{color:var(--ink3);border-color:var(--line)}
   .stamp.doing{color:var(--amber);border-color:var(--amber);background:var(--amber-soft)}
   .stamp.done{color:var(--pine);border-color:var(--pine);background:var(--pine-soft)}
+  .pdeadline{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ink3);padding:0 18px 12px;margin-top:-6px}
+  .pdeadline input{border:1px solid var(--line);border-radius:6px;padding:2px 6px;font:inherit;font-size:12px;background:var(--paper);color:var(--ink2)}
+  .pdeadline input:focus{outline:none;border-color:var(--pine)}
+  .pdday{font-weight:600;padding:1px 7px;border-radius:5px;background:var(--paper)}
+  .pdday.urgent{color:var(--clay);background:var(--clay-soft)}
+  .pdday.soon{color:var(--amber);background:var(--amber-soft)}
+  .pdday.ok{color:var(--pine);background:var(--pine-soft)}
+  .pdday.past{color:var(--ink3)}
   .pbody{border-top:1px solid var(--line);padding:14px 18px 16px;display:none}
   .phase.open .pbody{display:block}
   .todo{display:flex;align-items:center;gap:10px;padding:5px 0;font-size:14px}
@@ -308,6 +316,7 @@ function migrate(d){
     if(!('request' in ev)) ev.request='';
     if(!('folder' in ev)) ev.folder='';
     if(!Array.isArray(ev.inventory)) ev.inventory=[];
+    if(Array.isArray(ev.phases)) ev.phases.forEach(p=>{ if(!('deadline' in p)) p.deadline=''; });
   });
   return d;
 }
@@ -357,6 +366,12 @@ function ddayEv(ev){ const s=evStart(ev); if(!s) return '';
   if(diff===0) return 'D-DAY';
   if(t<=ed) return '행사 중';
   return 'D+'+Math.round((t-ed)/864e5); }
+function ddayOf(dateStr){ if(!dateStr) return null;
+  const t=new Date().setHours(0,0,0,0); const d=new Date(dateStr+'T00:00:00');
+  const diff=Math.ceil((d-t)/864e5);
+  const label = diff>0?('D-'+diff) : diff===0?'D-DAY' : ('D+'+Math.abs(diff));
+  const cls = diff<0?'past' : diff<=1?'urgent' : diff<=3?'soon' : 'ok';
+  return {label,cls}; }
 function progress(ev){ const total=ev.phases.reduce((a,p)=>a+p.todos.length,0)||1;
   const done=ev.phases.reduce((a,p)=>a+p.todos.filter(t=>t.done).length,0); return Math.round(done/total*100); }
 function currentStage(ev){ const p=ev.phases.find(p=>p.status!=='done'); return p?PHASES.find(x=>x.k===p.k):null; }
@@ -374,7 +389,7 @@ function createNewEvent(){
     budget:g('nBudget').trim(), request:g('nReq').trim(),
     intake:'new', folder:'', note:'', inventory:[],
     createdAt:new Date().toISOString().slice(0,10),
-    phases:PHASES.map(p=>({k:p.k,status:'todo',todos:p.d[type].map(x=>({text:x,done:false}))})) };
+    phases:PHASES.map(p=>({k:p.k,status:'todo',deadline:'',todos:p.d[type].map(x=>({text:x,done:false}))})) };
   state.events.unshift(ev); save();
   document.getElementById('newDlg').close();
   document.getElementById('nName').value=''; document.getElementById('nReq').value='';
@@ -401,6 +416,8 @@ function rmTodo(eid,k,i){ state.events.find(e=>e.id===eid).phases.find(p=>p.k===
 function setField(eid,f,v){ const ev=state.events.find(e=>e.id===eid); ev[f]=v; save();
   if(f!=='note') render(); }
 function togglePhase(k){ view.open[k]=!view.open[k]; render(); }
+function setPhaseDeadline(eid,k,v){ const p=state.events.find(e=>e.id===eid).phases.find(p=>p.k===k);
+  p.deadline=v; save(); render(); }
 
 /* ---------- 프롬프트 복사 ---------- */
 function copyIntakePrompt(){
@@ -409,8 +426,11 @@ function copyIntakePrompt(){
 }
 function copyPrompt(eid,k){
   const ev=state.events.find(e=>e.id===eid); const ph=PHASES.find(p=>p.k===k);
+  const p=ev.phases.find(p=>p.k===k);
   const extra=[ev.place?'장소: '+ev.place:'', ev.headcount?'예상 인원: '+ev.headcount:'', ev.budget?'예산: '+ev.budget:''].filter(Boolean).join(', ');
-  const txt=`church-orchestration 스킬로 "${ev.name}" ${ph.t}(${ph.n}) 단계를 실행해줘. 행사 유형: ${TYPELABEL[ev.type]}, 기간: ${rangeText(ev)||'미정'}, 대상: ${ev.dept||'미정'}${extra?', '+extra:''}. ${ev.folder?'작업 폴더: '+ev.folder+'. ':''}이전 단계 산출물이 작업 폴더에 있으면 먼저 읽고 반영하고, 단계 완료 시 Gist(행사 id: ${ev.id})의 phases와 inventory를 갱신해줘.`;
+  const dd=ddayOf(p.deadline);
+  const deadlineTxt = p.deadline ? `이 단계 마감일: ${p.deadline}(${dd.label}). ` : '';
+  const txt=`church-orchestration 스킬로 "${ev.name}" ${ph.t}(${ph.n}) 단계를 실행해줘. 행사 유형: ${TYPELABEL[ev.type]}, 기간: ${rangeText(ev)||'미정'}, 대상: ${ev.dept||'미정'}${extra?', '+extra:''}. ${ev.folder?'작업 폴더: '+ev.folder+'. ':''}${deadlineTxt}이전 단계 산출물이 작업 폴더에 있으면 먼저 읽고 반영하고, 단계 완료 시 Gist(행사 id: ${ev.id})의 phases와 inventory를 갱신해줘.`;
   copyText(txt,'실행 프롬프트를 복사했습니다 — Claude Code에 붙여넣으세요');
 }
 function copyText(txt,msg){
@@ -475,11 +495,16 @@ function render(){
    ${ev.phases.map(p=>{
      const ph=PHASES.find(x=>x.k===p.k); const open=!!view.open[p.k];
      const dc=p.todos.filter(t=>t.done).length;
+     const dd=ddayOf(p.deadline);
      return `<div class="phase ${p.status} ${open?'open':''}">
       <div class="phead" onclick="togglePhase('${p.k}')">
         <span class="pnum">${ph.n}</span>
         <span class="ptitle"><b>${ph.t}</b><span>${ph.s} · ${dc}/${p.todos.length}</span></span>
+        ${dd&&p.status!=='done'?`<span class="pdday ${dd.cls}">${dd.label}</span>`:''}
         <button class="stamp ${p.status}" onclick="event.stopPropagation();cycleStatus('${ev.id}','${p.k}')">${SLABEL[p.status]}</button>
+      </div>
+      <div class="pdeadline" onclick="event.stopPropagation()">마감
+        <input type="date" value="${esc(p.deadline)}" onchange="setPhaseDeadline('${ev.id}','${p.k}',this.value)">
       </div>
       <div class="pbody">
         ${p.todos.map((t,i)=>`<div class="todo ${t.done?'done':''}">
