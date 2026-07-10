@@ -97,13 +97,29 @@
   .addrow{display:flex;gap:8px;margin-top:8px}
   .addrow input{flex:1;border:1px solid var(--line);border-radius:6px;padding:7px 10px;font:inherit;font-size:13.5px;background:var(--paper)}
   .addrow input:focus{outline:none;border-color:var(--pine)}
-  .pactions{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+  .todo-modes{display:flex;gap:4px;flex:none;margin-left:auto}
+  .tmode{border:1px solid var(--line);background:var(--paper);color:var(--ink2);border-radius:999px;padding:3px 9px;font:inherit;font-size:11px;cursor:pointer;white-space:nowrap}
+  .tmode:hover{border-color:var(--pine);color:var(--ink)}
+  .tmode.active{background:var(--pine);border-color:var(--pine);color:#fff}
+  .tpanel{flex-basis:100%;background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-top:2px}
+  .tpanel textarea{width:100%;min-height:56px;border:1px solid var(--line);border-radius:6px;padding:7px 9px;font:inherit;font-size:13px;background:#fff;resize:vertical}
+  .tpanel textarea:focus{outline:none;border-color:var(--pine)}
+  .tpanel-act{display:flex;align-items:center;gap:10px;margin-top:6px;flex-wrap:wrap}
+  .tdetail-preview{flex-basis:100%;font-size:12.5px;color:var(--ink2);background:var(--paper);border-left:2px solid var(--pine-line);padding:4px 10px;margin-top:2px;white-space:pre-wrap}
+  .reqchip{display:inline-block;font-size:10.5px;font-weight:600;border-radius:999px;padding:1px 8px;white-space:nowrap;flex:none}
+  .reqchip.new,.reqchip.running{color:var(--amber);background:var(--amber-soft)}
+  .reqchip.dispatched,.reqchip.queued,.reqchip.seen{color:var(--pine);background:var(--pine-soft)}
+  .reqchip.user{color:var(--clay);background:var(--clay-soft)}
+  .reqchip.done{color:var(--ink3);background:#EEF1F0}
+  .wsrow{display:flex;align-items:center;gap:10px;margin-top:8px;flex-wrap:wrap}
   .inv{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px 18px;margin-bottom:12px;overflow-x:auto}
   .inv h3{font-size:14px;font-weight:600;margin-bottom:8px;color:var(--ink2)}
   .inv table{width:100%;border-collapse:collapse;font-size:13px}
   .inv th{font-weight:600;color:var(--ink2);text-align:left;border-bottom:1px solid var(--line);padding:4px 8px 4px 0;white-space:nowrap}
   .inv td{border-bottom:1px solid var(--paper);padding:4px 8px 4px 0}
   .inv td.src-user{color:var(--amber);font-weight:500}
+  .inv td a{color:var(--pine);text-decoration:none;border-bottom:1px dotted var(--pine-line)}
+  .inv td a:hover{border-bottom-style:solid}
   .notes{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px 18px;margin-top:4px}
   .notes h3{font-size:14px;font-weight:600;margin-bottom:8px;color:var(--ink2)}
   .notes textarea{width:100%;min-height:80px;border:none;background:transparent;font:inherit;font-size:14px;resize:vertical;color:var(--ink)}
@@ -197,6 +213,9 @@
 const KEY='church-orch-v1';            /* 로컬 캐시 (v1과 호환) */
 const CONFIG_KEY='church-orch-config-v1';
 const DATA_FILE='church-orch-data.json';
+const COMPANY_GIST_ID='b46a4393b6255a460fa29b94ccbfa83f';  /* AI Company 상황판 접수함 — 실행 요청 전달처 */
+const COMPANY_GIST_FILE='company-status.json';
+const REQ_LABEL={new:'접수',running:'실행 중',dispatched:'실행 예약',queued:'정기 회차 대기',seen:'확인',user:'사용자 실행',done:'완료'};
 
 const PHASES=[
  {k:'pastor',  n:'1',  t:'목회자 세션',   s:'주제 · 목표 · 말씀 방향',
@@ -223,10 +242,12 @@ const SNEXT={todo:'doing',doing:'done',done:'todo'};
 const TYPELABEL={retreat:'수련회',weekly:'주간·절기'};
 const INTAKELABEL={new:'접수대기',accepted:'진행중',done:'완료'};
 const POLL_MS=45000;
-let state={version:2,updatedAt:'',events:[],deletedIds:[]}, view={mode:'list',id:null,open:{}};
+let state={version:2,updatedAt:'',events:[],deletedIds:[]}, view={mode:'list',id:null,open:{},todoPanel:{}};
 let saveTimer=null, pushTimer=null, pollTimer=null;
 let config={};
 let pendingRemoteMerge=null; /* 입력 포커스 중 보류된 원격 병합 */
+let gistFiles=null;          /* 자기 gist의 전체 files (md 산출물 하이퍼링크용) */
+let companyRequestsMap={};   /* AI Company 접수함에서 읽어온 실행 요청 상태 (id -> {status,result,action}) — 여기서 쓰지 않고 읽기만 */
 
 /* ---------- 포커스 보호 ---------- */
 function isEditingFocus(){
@@ -274,6 +295,9 @@ async function createGistFromDlg(){
 /* ---------- Gist 동기화 ---------- */
 function ghHeaders(json){ const h={Authorization:'Bearer '+config.token,Accept:'application/vnd.github+json'};
   if(json) h['Content-Type']='application/json'; return h; }
+function ghHeadersOpt(json){ const h={Accept:'application/vnd.github+json'};
+  if(config.token) h.Authorization='Bearer '+config.token;
+  if(json) h['Content-Type']='application/json'; return h; }
 let lastSyncAt=null;
 function setSync(mode,msg){
   const d=document.getElementById('syncDot'), t=document.getElementById('syncText');
@@ -286,11 +310,57 @@ function setSync(mode,msg){
 async function remoteGet(){
   const r=await fetch('https://api.github.com/gists/'+config.gistId,{headers:ghHeaders()});
   if(!r.ok) throw new Error('HTTP '+r.status);
-  const j=await r.json(); const f=j.files&&j.files[DATA_FILE];
+  const j=await r.json(); gistFiles=j.files||null; const f=j.files&&j.files[DATA_FILE];
   if(!f) return null;
   let content=f.content;
   if(f.truncated){ const rr=await fetch(f.raw_url); content=await rr.text(); }
   return migrate(JSON.parse(content));
+}
+
+/* ---------- AI Company 접수함 연동 (실행 요청 제출 + 상태 조회, 읽기·쓰기 모두 requests[]만) ---------- */
+async function sendMinistryRequest(text){
+  if(!config.token){ toast('먼저 동기화 설정에서 토큰을 입력해 주세요'); return null; }
+  const id='r-'+Date.now().toString(36)+Math.random().toString(36).slice(2,5);
+  const now=new Date().toISOString();
+  try{
+    const r=await fetch('https://api.github.com/gists/'+COMPANY_GIST_ID,{headers:ghHeadersOpt()});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const j=await r.json(); const f=j.files&&j.files[COMPANY_GIST_FILE];
+    if(!f) throw new Error('company gist 파일 없음');
+    let content=f.content;
+    if(f.truncated){ const rr=await fetch(f.raw_url); content=await rr.text(); }
+    const data=JSON.parse(content);
+    data.requests=data.requests||[];
+    data.requests.push({id,at:now,team:'ministry',action:'free',text,status:'new',updatedAt:now});
+    const put=await fetch('https://api.github.com/gists/'+COMPANY_GIST_ID,{method:'PATCH',headers:ghHeadersOpt(true),
+      body:JSON.stringify({files:{[COMPANY_GIST_FILE]:{content:JSON.stringify(data,null,1)}}})});
+    if(!put.ok) throw new Error('HTTP '+put.status);
+    companyRequestsMap[id]={status:'new',action:'free'};
+    return id;
+  }catch(e){ toast('요청 전송 실패: '+e.message); return null; }
+}
+async function pullCompanyRequests(){
+  if(!config.token) return;
+  try{
+    const r=await fetch('https://api.github.com/gists/'+COMPANY_GIST_ID,{headers:ghHeadersOpt()});
+    if(!r.ok) return;
+    const j=await r.json(); const f=j.files&&j.files[COMPANY_GIST_FILE];
+    if(!f) return;
+    let content=f.content;
+    if(f.truncated){ const rr=await fetch(f.raw_url); content=await rr.text(); }
+    const data=JSON.parse(content);
+    const map={};
+    (data.requests||[]).forEach(rq=>{ map[rq.id]={status:rq.status,result:rq.result,action:rq.action}; });
+    companyRequestsMap=map;
+    if(!isEditingFocus()) render();
+  }catch(e){ /* 무시 — 다음 폴링에서 재시도 */ }
+}
+function reqChip(id){
+  if(!id) return '';
+  const r=companyRequestsMap[id];
+  const st=r?r.status:'new';
+  const label=REQ_LABEL[st]||st;
+  return `<span class="reqchip ${esc(st)}"${r&&r.result?` title="${esc(r.result)}"`:''}>${esc(label)}</span>`;
 }
 async function remotePutRaw(payload){
   const r=await fetch('https://api.github.com/gists/'+config.gistId,{method:'PATCH',
@@ -332,6 +402,7 @@ async function syncNow(){
     state=merged; cacheWrite();
     if(isEditingFocus()) pendingRemoteMerge=merged; else render();
     setSync('ok');
+    pullCompanyRequests();
   }catch(e){ setSync('err',e.message); }
 }
 function schedulePush(){
@@ -366,9 +437,9 @@ async function autoPull(){
 }
 function startPolling(){
   clearInterval(pollTimer);
-  pollTimer=setInterval(()=>{ if(document.visibilityState==='visible') autoPull(); }, POLL_MS);
-  document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible') autoPull(); });
-  window.addEventListener('focus', autoPull);
+  pollTimer=setInterval(()=>{ if(document.visibilityState==='visible'){ autoPull(); pullCompanyRequests(); } }, POLL_MS);
+  document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible'){ autoPull(); pullCompanyRequests(); } });
+  window.addEventListener('focus', ()=>{ autoPull(); pullCompanyRequests(); });
 }
 
 /* ---------- 로컬 캐시 ---------- */
@@ -388,9 +459,15 @@ function migrate(d){
     if(!Array.isArray(ev.inventory)) ev.inventory=[];
     if(!('updatedAt' in ev)) ev.updatedAt='';
     if(!('rev' in ev)) ev.rev=0;
+    if(!('wsRequestId' in ev)) ev.wsRequestId='';
     if(Array.isArray(ev.phases)) ev.phases.forEach(p=>{
       delete p.deadline; /* 단계 마감은 폐기 — 항목별 마감으로 대체 */
-      if(Array.isArray(p.todos)) p.todos.forEach(t=>{ if(!('deadline' in t)) t.deadline=''; });
+      if(Array.isArray(p.todos)) p.todos.forEach(t=>{
+        if(!('deadline' in t)) t.deadline='';
+        if(!('detail' in t)) t.detail='';
+        if(!('requestId' in t)) t.requestId='';
+        if(!('requestText' in t)) t.requestText='';
+      });
     });
   });
   return d;
@@ -399,7 +476,7 @@ async function load(){
   loadConfig();
   try{ const v=localStorage.getItem(KEY); if(v) state=migrate(JSON.parse(v)); }catch(e){}
   render();
-  if(config.token&&config.gistId){ await syncNow(); startPolling(); } else setSync('local');
+  if(config.token&&config.gistId){ await syncNow(); startPolling(); pullCompanyRequests(); } else setSync('local');
 }
 function save(){
   state.updatedAt=new Date().toISOString();
@@ -462,10 +539,10 @@ function createNewEvent(){
     dept:g('nDept').trim(), dateStart:g('nDate'), dateEnd:g('nDateEnd'),
     place:g('nPlace').trim(), headcount:g('nHead').trim(),
     budget:g('nBudget').trim(), request:g('nReq').trim(),
-    intake:'new', folder:'', note:'', inventory:[],
+    intake:'new', folder:'', note:'', inventory:[], wsRequestId:'',
     createdAt:new Date().toISOString().slice(0,10),
     updatedAt:new Date().toISOString(), rev:0,
-    phases:PHASES.map(p=>({k:p.k,status:'todo',todos:p.d[type].map(x=>({text:x,done:false,deadline:''}))})) };
+    phases:PHASES.map(p=>({k:p.k,status:'todo',todos:p.d[type].map(x=>({text:x,done:false,deadline:'',detail:'',requestId:'',requestText:''}))})) };
   state.events.unshift(ev); save();
   document.getElementById('newDlg').close();
   document.getElementById('nName').value=''; document.getElementById('nReq').value='';
@@ -505,7 +582,7 @@ function toggleTodo(eid,k,i){ const ev=state.events.find(e=>e.id===eid); const p
   touchEvent(ev); save(); render(); }
 function addTodo(eid,k,inp){ const v=inp.value.trim(); if(!v) return;
   const ev=state.events.find(e=>e.id===eid);
-  ev.phases.find(p=>p.k===k).todos.push({text:v,done:false,deadline:''});
+  ev.phases.find(p=>p.k===k).todos.push({text:v,done:false,deadline:'',detail:'',requestId:'',requestText:''});
   inp.value=''; touchEvent(ev); save(); render(); view.open[k]=true; }
 function rmTodo(eid,k,i){ const ev=state.events.find(e=>e.id===eid);
   ev.phases.find(p=>p.k===k).todos.splice(i,1); touchEvent(ev); save(); render(); }
@@ -526,20 +603,63 @@ function copyIntakePrompt(){
   const txt='church-orchestration 스킬로 Gist 접수함을 확인해줘. 접수대기(intake: new) 행사가 있으면 정보를 요약해서 보여주고, 확인 후 작업 폴더를 생성하고 intake를 accepted로 갱신해줘. Gist ID는 gist-config.md 참조.';
   copyText(txt,'접수 프롬프트를 복사했습니다 — Claude Code에 붙여넣으세요');
 }
-function copyPrompt(eid,k){
-  const ev=state.events.find(e=>e.id===eid); const ph=PHASES.find(p=>p.k===k);
-  const p=ev.phases.find(p=>p.k===k);
-  const extra=[ev.place?'장소: '+ev.place:'', ev.headcount?'예상 인원: '+ev.headcount:'', ev.budget?'예산: '+ev.budget:''].filter(Boolean).join(', ');
-  const withDeadline=p.todos.filter(t=>!t.done && t.deadline).sort((a,b)=>a.deadline.localeCompare(b.deadline));
-  let deadlineTxt='';
-  if(withDeadline.length){
-    const shown=withDeadline.slice(0,3).map(t=>`${t.text}(${t.deadline}, ${ddayOf(t.deadline).label})`);
-    const rest=withDeadline.length-shown.length;
-    deadlineTxt=`항목별 마감: ${shown.join(', ')}${rest>0?` 외 ${rest}건`:''}. `;
-  }
-  const txt=`church-orchestration 스킬로 "${ev.name}" ${ph.t}(${ph.n}) 단계를 실행해줘. 행사 유형: ${TYPELABEL[ev.type]}, 기간: ${rangeText(ev)||'미정'}, 대상: ${ev.dept||'미정'}${extra?', '+extra:''}. ${ev.folder?'작업 폴더: '+ev.folder+'. ':''}${deadlineTxt}이전 단계 산출물이 작업 폴더에 있으면 먼저 읽고 반영하고, 단계 완료 시 Gist(행사 id: ${ev.id})의 phases와 inventory를 갱신해줘.`;
-  copyText(txt,'실행 프롬프트를 복사했습니다 — Claude Code에 붙여넣으세요');
+/* ---------- 항목별 3분기(완료확인/실행요청/내용업데이트) ---------- */
+function toggleTodoPanel(k,i,mode){
+  view.todoPanel=view.todoPanel||{};
+  const key=k+'_'+i;
+  view.todoPanel[key]=(view.todoPanel[key]===mode)?null:mode;
+  render();
 }
+async function submitExecRequest(eid,k,i){
+  const key=k+'_'+i;
+  const ta=document.getElementById('exec_'+key);
+  const text=(ta&&ta.value||'').trim();
+  if(!text){ toast('실행할 내용을 입력해 주세요'); return; }
+  const ev=state.events.find(e=>e.id===eid);
+  const ph=PHASES.find(p=>p.k===k);
+  const t=ev.phases.find(p=>p.k===k).todos[i];
+  const extra=[ev.place?'장소: '+ev.place:'', ev.headcount?'예상 인원: '+ev.headcount:''].filter(Boolean).join(', ');
+  const fullText=`[사역/${ev.name}/${ph.t}] "${t.text}" — ${text}${extra?' ('+extra+')':''}`;
+  const id=await sendMinistryRequest(fullText);
+  if(!id) return;
+  t.requestId=id; t.requestText=text;
+  touchEvent(ev); save();
+  view.todoPanel[key]=null;
+  render();
+  toast('실행 요청을 보냈습니다 — 컴퍼니 상황판 접수함에서도 확인됩니다');
+}
+function submitDetail(eid,k,i,value){
+  const ev=state.events.find(e=>e.id===eid);
+  ev.phases.find(p=>p.k===k).todos[i].detail=value;
+  touchEvent(ev); save();
+}
+async function sendWorkspaceDetect(eid){
+  const ev=state.events.find(e=>e.id===eid);
+  const fullText=`[사역/${ev.name}] 작업 폴더를 지금 스캔해서 새로 추가된 파일(특히 사용자 제공 자료)을 inventory에 반영하고, md 산출물은 대시보드 하이퍼링크용으로 gist에 동기화해줘.`;
+  const id=await sendMinistryRequest(fullText);
+  if(!id) return;
+  ev.wsRequestId=id;
+  touchEvent(ev); save(); render();
+  toast('워크스페이스 감지를 요청했습니다 — 컴퍼니 상황판에서도 확인됩니다');
+}
+
+/* ---------- 산출물 md 하이퍼링크 (자기 gist에 동기화된 파일을 새창으로) ---------- */
+function sanitizeKey(s){ return (s||'').replace(/[\/\\]/g,'_'); }
+function docKeyFor(it){ return 'doc__'+sanitizeKey(it.folder)+'__'+sanitizeKey(it.file); }
+function openDoc(key,title){
+  const f=gistFiles&&gistFiles[key];
+  if(!f){ toast('아직 동기화되지 않았습니다 — 워크스페이스 감지 요청 후 다시 시도하세요'); return; }
+  const w=window.open('','_blank');
+  if(!w){ toast('팝업이 차단되었습니다'); return; }
+  const write=txt=>{ w.document.write('<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+esc(title||key)+'</title><style>body{margin:0;padding:24px 14px;background:#F3F5F4;font-family:-apple-system,\'Apple SD Gothic Neo\',sans-serif}pre{max-width:760px;margin:0 auto;background:#fff;border:1px solid #DCE3E0;border-radius:10px;padding:22px;white-space:pre-wrap;word-break:break-word;font:13.5px/1.8 ui-monospace,\'Apple SD Gothic Neo\',monospace;color:#1E2A26}</style></head><body><pre>'+esc(txt)+'</pre></body></html>'); w.document.close(); };
+  if(f.truncated){ fetch(f.raw_url).then(r=>r.text()).then(write).catch(()=>{ try{w.close();}catch(e){} toast('본문 로드 실패'); }); }
+  else write(f.content||'');
+}
+document.addEventListener('click',(e)=>{
+  const a=e.target.closest('.docLink');
+  if(a){ e.preventDefault(); openDoc(a.dataset.key, a.dataset.title); }
+});
+
 function copyText(txt,msg){
   const done=()=>toast(msg);
   if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(txt).then(done).catch(()=>fallbackCopy(txt,done)); }
@@ -597,6 +717,11 @@ function render(){
      </div>
      ${ev.request?`<div class="folderpath" style="font-family:inherit">요청: ${esc(ev.request)}</div>`:''}
      ${ev.folder?`<div class="folderpath">📁 ${esc(ev.folder)}</div>`:''}
+     <div class="wsrow">
+       <button class="btn ghost small" onclick="sendWorkspaceDetect('${ev.id}')">🔍 워크스페이스 감지</button>
+       ${reqChip(ev.wsRequestId)}
+       <span class="muted" style="font-size:12px">작업 폴더의 새 파일(사용자 제공 포함)을 즉시 스캔 요청합니다</span>
+     </div>
      <div class="bar" style="margin-top:10px"><i style="width:${pr}%"></i></div>
    </div>
    ${ev.phases.map(p=>{
@@ -613,26 +738,45 @@ function render(){
       <div class="pbody">
         ${p.todos.map((t,i)=>{
           const tdd=!t.done?ddayOf(t.deadline):null;
+          const pkey=p.k+'_'+i;
+          const panel=view.todoPanel&&view.todoPanel[pkey];
+          const chip=reqChip(t.requestId);
           return `<div class="todo ${t.done?'done':''}">
           <input type="checkbox" id="t_${p.k}_${i}" ${t.done?'checked':''} onchange="toggleTodo('${ev.id}','${p.k}',${i})">
           <label for="t_${p.k}_${i}">${esc(t.text)}</label>
           ${tdd?`<span class="pdday ${tdd.cls}">${tdd.label}</span>`:''}
           <input class="tdl" type="date" value="${esc(t.deadline||'')}" onchange="setTodoDeadline('${ev.id}','${p.k}',${i},this.value)" title="마감일">
+          <div class="todo-modes">
+            <button class="tmode ${t.done?'active':''}" onclick="toggleTodo('${ev.id}','${p.k}',${i})">완료 확인</button>
+            <button class="tmode ${panel==='exec'?'active':''}" onclick="toggleTodoPanel('${p.k}',${i},'exec')">실행 요청 업무</button>
+            <button class="tmode ${panel==='detail'?'active':''}" onclick="toggleTodoPanel('${p.k}',${i},'detail')">내용 업데이트</button>
+          </div>
+          ${chip}
           <button class="x" title="삭제" onclick="rmTodo('${ev.id}','${p.k}',${i})">✕</button>
+          ${panel==='exec'?`<div class="tpanel">
+            <textarea id="exec_${pkey}" placeholder="실행할 작업을 자연어로 입력…">${esc(t.requestText||'')}</textarea>
+            <div class="tpanel-act"><button class="btn small" onclick="submitExecRequest('${ev.id}','${p.k}',${i})">요청 보내기</button>
+            <span class="muted" style="font-size:12px">컴퍼니 상황판 접수함으로 전달되어 실행됩니다</span></div>
+          </div>`:''}
+          ${panel==='detail'?`<div class="tpanel">
+            <textarea id="detail_${pkey}" placeholder="이 항목의 추가 상세 내용…" oninput="submitDetail('${ev.id}','${p.k}',${i},this.value)">${esc(t.detail||'')}</textarea>
+          </div>`:''}
+          ${(!panel && t.detail)?`<div class="tdetail-preview">${esc(t.detail)}</div>`:''}
         </div>`;}).join('')}
         <div class="addrow">
-          <input placeholder="항목 추가 후 Enter" onkeydown="if(event.key==='Enter')addTodo('${ev.id}','${p.k}',this)">
-        </div>
-        <div class="pactions">
-          <button class="btn small" onclick="copyPrompt('${ev.id}','${p.k}')">실행 프롬프트 복사</button>
+          <input placeholder="할 일·명령 추가 후 Enter" onkeydown="if(event.key==='Enter')addTodo('${ev.id}','${p.k}',this)">
         </div>
       </div>
      </div>`;
    }).join('')}
-   ${ev.inventory&&ev.inventory.length?`<div class="inv"><h3>작업 폴더 산출물 (오케스트레이터 스캔 기록)</h3>
+   ${ev.inventory&&ev.inventory.length?`<div class="inv"><h3>작업 폴더 산출물 (오케스트레이터 스캔 기록) — .md는 클릭해 열람</h3>
      <table><tr><th>폴더</th><th>파일명</th><th>출처</th><th>수정일</th></tr>
-     ${ev.inventory.map(it=>`<tr><td>${esc(it.folder)}</td><td>${esc(it.file)}</td>
-       <td class="${it.source==='사용자 제공'?'src-user':''}">${esc(it.source)}</td><td>${esc(it.modified)}</td></tr>`).join('')}
+     ${ev.inventory.map(it=>{
+       const isMd=/\.md$/i.test(it.file||'');
+       const fileCell=isMd?`<a href="javascript:void(0)" class="docLink" data-key="${esc(docKeyFor(it))}" data-title="${esc(it.file)}">${esc(it.file)}</a>`:esc(it.file);
+       return `<tr><td>${esc(it.folder)}</td><td>${fileCell}</td>
+       <td class="${it.source==='사용자 제공'?'src-user':''}">${esc(it.source)}</td><td>${esc(it.modified)}</td></tr>`;
+     }).join('')}
      </table></div>`:''}
    <div class="notes"><h3>행사 메모</h3>
      <textarea placeholder="결정 사항, 확인 필요 항목 등을 자유롭게 기록"
