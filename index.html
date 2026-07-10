@@ -318,7 +318,8 @@ async function remoteGet(){
 }
 
 /* ---------- AI Company 접수함 연동 (실행 요청 제출 + 상태 조회, 읽기·쓰기 모두 requests[]만) ---------- */
-async function sendMinistryRequest(text){
+async function sendMinistryRequest(text,action){
+  action=action||'free';
   if(!config.token){ toast('먼저 동기화 설정에서 토큰을 입력해 주세요'); return null; }
   const id='r-'+Date.now().toString(36)+Math.random().toString(36).slice(2,5);
   const now=new Date().toISOString();
@@ -331,11 +332,11 @@ async function sendMinistryRequest(text){
     if(f.truncated){ const rr=await fetch(f.raw_url); content=await rr.text(); }
     const data=JSON.parse(content);
     data.requests=data.requests||[];
-    data.requests.push({id,at:now,team:'ministry',action:'free',text,status:'new',updatedAt:now});
+    data.requests.push({id,at:now,team:'ministry',action,text,status:'new',updatedAt:now});
     const put=await fetch('https://api.github.com/gists/'+COMPANY_GIST_ID,{method:'PATCH',headers:ghHeadersOpt(true),
       body:JSON.stringify({files:{[COMPANY_GIST_FILE]:{content:JSON.stringify(data,null,1)}}})});
     if(!put.ok) throw new Error('HTTP '+put.status);
-    companyRequestsMap[id]={status:'new',action:'free'};
+    companyRequestsMap[id]={status:'new',action};
     return id;
   }catch(e){ toast('요청 전송 실패: '+e.message); return null; }
 }
@@ -635,12 +636,14 @@ function submitDetail(eid,k,i,value){
 }
 async function sendWorkspaceDetect(eid){
   const ev=state.events.find(e=>e.id===eid);
-  const fullText=`[사역/${ev.name}] 작업 폴더를 지금 스캔해서 새로 추가된 파일(특히 사용자 제공 자료)을 inventory에 반영하고, md 산출물은 대시보드 하이퍼링크용으로 gist에 동기화해줘.`;
-  const id=await sendMinistryRequest(fullText);
+  /* ministry.scan — 무인 위임 화이트리스트 등재 action(2026-07-11). 범위: 폴더 스캔→inventory
+     갱신+status.md 미러+md 산출물 gist 동기화만. phases/intake 변경은 여전히 사용자 전용. */
+  const fullText=`[ministry.scan] 행사id:${ev.id} 이름:${ev.name} 폴더:${ev.folder||'(미기입)'}`;
+  const id=await sendMinistryRequest(fullText,'ministry.scan');
   if(!id) return;
   ev.wsRequestId=id;
   touchEvent(ev); save(); render();
-  toast('워크스페이스 감지를 요청했습니다 — 컴퍼니 상황판에서도 확인됩니다');
+  toast('워크스페이스 감지를 요청했습니다 — 몇 분 내 자동 처리됩니다(inventory·md 동기화만, 안전 범위 한정)');
 }
 
 /* ---------- 산출물 md 하이퍼링크 (자기 gist에 동기화된 파일을 새창으로) ---------- */
